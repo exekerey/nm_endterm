@@ -1,0 +1,36 @@
+problem:
+  n: 8
+  p: 8
+  A_path: ../data/A.npy
+  b_path: ../data/b.npy
+  feature_mode: identity
+  env: time_alloc
+learning:
+  algo: sgd
+  eta: 0.05
+  lambda: 0.98
+  projection: simplex
+  exploration: epsilon
+  epsilon: 0.1
+  k: 5
+stability:
+  trust_region: true
+  Delta0: 1.5
+  Delta_min: 0.5
+  Delta_max: 3.0
+  up_factor: 1.1
+  down_factor: 0.7
+run:
+  T_max: 200
+  tol_c: 1.0e-3
+  tol_err: 0.05
+  seed: 42
+init:
+  c: uniform
+  theta: uniform
+  P_scale: 100.0
+environment:
+  type: time_alloc
+  weights: [0.9, 1.2, 0.7, 1.5, 1.1, 0.6, 1.3, 0.8]
+  noise_std: 0.05
+  clip_range: [0.0, 10.0]
