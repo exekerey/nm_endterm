@@ -12,15 +12,16 @@
 1. **snapshot** – the “assets info table” is prefilled from binance (price, expected return = 24 h change %, risk = high–low span / price). you can override any cell; only edited values replace the live feed.
 2. **lp build** – `trader.py` turns the snapshot into an lp: maximize `Σ wᵢ·rᵢ` subject to budget, per-asset caps, and risk budget. weights are fractions of total capital.
 3. **simplex solve** – `simplex.py` runs the primal simplex method and returns optimal weights. dollars = `budget * weight`, quantity = `allocation / price`.
-4. **ledger write** – the result is appended to `trades/trades.csv` with timestamp, iteration, weight, allocation, quantity, price, and expected return.
-5. **ui update** – streamlit shows:
+4. **state update + trades** – `portfolio_state.py` compares the new target quantities to the previous holdings, using current prices to compute buy/sell deltas. it writes `portfolio_state.json` so the next iteration knows what we currently own.
+5. **ledger write** – the result is appended to `trades.csv` with timestamp, iteration, weight, allocation, quantity, price, and expected return.
+6. **ui update** – streamlit shows:
    - metrics (objective, cash reserve, number of assets),
    - the latest allocation table,
    - “allocation rationale” (objective contributions + constraint checks),
    - charts (weights, allocations, objective over time),
    - “rebalance log” sourced directly from the csv.
 
-because charts and logs read from the ledger, all prior allocations remain visible even after restarting the app. pressing **clear history** truncates `trades/trades.csv` and resets the visuals.
+because charts and logs read from the ledger, all prior allocations remain visible even after restarting the app. pressing **clear history** truncates `trades.csv` and resets the visuals.
 
 ## how to run it
 
@@ -48,8 +49,9 @@ streamlit run app.py
 | `simplex.py` | primal simplex solver (`max c^T x` with `Ax ≤ b`). |
 | `trader.py` | builds lp from snapshots, maps solution to trade decisions. |
 | `ledger.py` | append-only csv writer; clear history button recreates the file. |
+| `portfolio_state.py` | load/save holdings and compute trade deltas for the “trade instructions” table. |
 | `tests/test_simplex.py` | regression tests for solver and risk-budget logic. |
-| `trades/trades.csv` | persistent history consumed by charts/logs. |
+| `trades.csv` | persistent history consumed by charts/logs. |
 
 ## validating for the assignment
 
@@ -64,11 +66,11 @@ streamlit run app.py
 3. hit “rebalance now” and walk through:
    - the toast with local time,
    - the allocation table,
+   - the “trade instructions” table (highlighting buy/sell deltas),
    - the rationale tables (objective + constraints),
    - the charts,
    - the rebalance log row that just appeared (with iteration number).
-4. open `trades/trades.csv` to prove history persists.
+4. open `trades.csv` to prove history persists.
 5. mention tests + literature references for completeness.
 
 after walking through these steps, your classmate should be able to operate the project and explain every requirement (problem context, model formulation, implementation, results, validation, and future work).
-

@@ -1,2 +1,5 @@
 .venv/
 __pycache__/
+trades.csv
+.idea
+portfolio_state.json

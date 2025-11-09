@@ -16,10 +16,12 @@ from streamlit_autorefresh import st_autorefresh
 from ledger import TradeLedger, TradeRecord
 from market import DEFAULT_SYMBOLS, AssetSnapshot, BinanceAPIError, MarketDataSource
 from simplex import SimplexError
+from portfolio_state import PortfolioState, apply_target_state, compute_trades, load_state, save_state
 from trader import SimplexTradeEngine, TradeDecision, TradingResult
 
 
 USER_TZ = timezone(timedelta(hours=5))
+STATE_PATH = Path("portfolio_state.json")
 
 
 def _format_local_time(ts: datetime, *, include_date: bool = True) -> str:
@@ -40,6 +42,7 @@ def _init_session_state() -> None:
     st.session_state.setdefault("manual_prefill_done", False)
     st.session_state.setdefault("manual_prefill_baseline", {})
     st.session_state.setdefault("manual_risk_overrides", {})
+    st.session_state.setdefault("last_trades", [])
 
 
 def _sync_manual_override_rows(symbols: Sequence[str]) -> List[dict]:
@@ -325,20 +328,22 @@ def _lp_diagnostics(
     decisions: Sequence[TradeDecision],
     max_allocation: float,
     risk_budget: float,
+    budget: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not decisions:
         return pd.DataFrame(), pd.DataFrame()
     weights = np.array([decision.weight for decision in decisions], dtype=float)
     expected = np.array([snap.expected_return for snap in snapshots], dtype=float)
-    contributions = weights * expected
+    allocations = budget * weights
+    usd_returns = allocations * expected
     objective_rows = []
-    for decision, contribution in zip(decisions, contributions):
+    for decision, allocation, usd_return in zip(decisions, allocations, usd_returns):
         objective_rows.append(
             {
                 "symbol": decision.symbol,
                 "weight": decision.weight,
-                "expected_return (24h)": decision.expected_return,
-                "contribution": contribution,
+                "allocation": allocation,
+                "expected_return_usd": usd_return,
             }
         )
     objective_df = pd.DataFrame(objective_rows)
@@ -419,9 +424,26 @@ def _decisions_dataframe(timestamp: datetime, decisions: Sequence[TradeDecision]
                 "allocation": d.allocation,
                 "quantity": d.quantity,
                 "price": d.price,
-                "expected_return": d.expected_return,
+                "expected_return_usd": d.allocation * d.expected_return,
             }
             for d in decisions
+        ]
+    )
+
+
+def _trades_dataframe(trades: Sequence[dict]) -> pd.DataFrame:
+    if not trades:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "symbol": trade["symbol"],
+                "action": trade["action"],
+                "quantity": trade["quantity"],
+                "price": trade["price"],
+                "notional_usd": trade["notional_usd"],
+            }
+            for trade in trades
         ]
     )
 
@@ -506,11 +528,14 @@ def main() -> None:
             step=10,
         )
 
-    ledger_path = Path("./trades.csv")
+    ledger_path = Path("trades.csv")
     if clear_ledger_clicked:
         _clear_ledger_file(ledger_path)
+        if STATE_PATH.exists():
+            STATE_PATH.unlink()
         st.session_state["history"] = []
         st.session_state["summary_history"] = []
+        st.session_state["last_trades"] = []
         st.sidebar.success("Ledger cleared.")
 
     st.subheader("assets info table")
@@ -560,6 +585,10 @@ def main() -> None:
             )
             result = engine.allocate(snapshots)
             _append_to_ledger(ledger_path, timestamp, len(st.session_state["summary_history"]), result.decisions)
+            previous_state = load_state(STATE_PATH)
+            trades = compute_trades(previous_state, result.decisions)
+            save_state(apply_target_state(result), STATE_PATH)
+            st.session_state["last_trades"] = trades
             _record_history(timestamp, result.decisions, result)
             st.session_state["last_result"] = result
             st.session_state["last_snapshots"] = snapshots
@@ -598,6 +627,11 @@ def main() -> None:
         decisions_df = _decisions_dataframe(last_timestamp, last_result.decisions)
         st.dataframe(decisions_df, hide_index=True, use_container_width=True)
 
+        trades_df = _trades_dataframe(st.session_state.get("last_trades", []))
+        if not trades_df.empty:
+            st.subheader("trade instructions")
+            st.dataframe(trades_df, hide_index=True, use_container_width=True)
+
         st.subheader("Allocation Rationale")
         budget_note = last_params.get("budget")
         max_alloc_note = last_params.get("max_allocation")
@@ -618,11 +652,17 @@ def main() -> None:
 
         diag_max_allocation = float(max_alloc_note) if max_alloc_note is not None else 1.0
         diag_risk_budget = float(risk_budget_note) if risk_budget_note is not None else 1.0
+        diag_budget = (
+            float(budget_note)
+            if budget_note is not None
+            else sum(d.allocation for d in last_result.decisions) + last_result.cash_reserve
+        )
         objective_df, constraints_df = _lp_diagnostics(
             last_snapshots,
             last_result.decisions,
             diag_max_allocation,
             diag_risk_budget,
+            diag_budget,
         )
         if not objective_df.empty:
             st.markdown("**Objective terms (per-asset contributions)**")
