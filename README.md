@@ -1,64 +1,48 @@
-# Adaptive Linear Program Runner
+# Simplex Crypto Allocator
 
-This project iterates a vanilla linear program whose reward coefficients are unknown. Each round we solve an LP, apply the decision, observe scalar feedback, and update a projection-constrained model of the coefficients.
+This repository reduces adaptive LP research down to its essentials: a clean simplex solver, a Binance/CSV data source, and a Streamlit dashboard that rebalances a portfolio while logging trades. No complex learners or orchestration layers—just the math needed to turn price snapshots into allocations.
 
-## Repository layout
-
-- `cli.py` – entry point for running experiments (`python cli.py --config ... --out ...`)
-- `config.py` – dataclasses and YAML loader (reads matrices, initializes learners)
-- `env/` – environment protocol plus synthetic time-allocation and routing examples
-- `solver/` – `linprog`-based LP wrapper with optional L1 trust region
-- `learners/` – SGD and RLS coefficient updaters with projection hooks
-- `runner/loop.py` – orchestration loop, exploration policies, trust-region scheduling
-- `telemetry/` – JSONL writer
-- `plots/` – matplotlib helpers for error, coefficient, and action-change curves
-- `configs/` – ready-to-run YAML configs (see `configs/time_alloc.yaml`)
-- `data/` – sample constraint matrices (`A.npy`, `b.npy`)
-- `tests/` – unit and integration tests
-- `app.py` – Streamlit front-end for interactive productivity planning
-
-## Running an experiment
+## Quick Start
 
 ```bash
-python cli.py --config configs/time_alloc.yaml --out runs/exp1
-```
-
-The command writes `runs/exp1/history.jsonl` and plots under `runs/exp1/plots/`. Inspect history with tools like `jq` or pandas.
-
-## Plugging in your own environment
-
-Implement the `Environment` protocol in `env/base.py`:
-
-```python
-class MyEnv:
-    n = ...
-    p = ...
-
-    def observe(self, x: np.ndarray) -> float:
-        # Evaluate your system with decision vector x and return scalar feedback.
-        ...
-
-    def features(self, x: np.ndarray) -> np.ndarray:
-        # Provide feature vector (default: return x).
-        return x
-
-    def extra_constraints(self, iteration: int):
-        # Optional: supply additional linear constraints (A_add, b_add).
-        return None
-```
-
-Then adapt `cli.py` (or create a custom entrypoint) to instantiate `MyEnv` instead of the synthetic examples. All other components remain unchanged.
-
-## Development
-
-Install dependencies with `pip install -r requirements.txt`. Run the test suite via `pytest`. The codebase intentionally uses only numpy/scipy/matplotlib to keep deployment light.
-
-### Streamlit planner
-
-Launch the interactive interface with:
-
-```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Use it to define activities, generate daily plans, log outcomes, and let the learner update its coefficient estimates in real time.
+Open the Streamlit UI and choose symbols, budgeting, and refresh cadence. Upload a CSV/JSON snapshot to override Binance, toggle auto-refresh for continuous rebalances, and watch real-time weight/return charts update as trades are appended to `trades/trades.csv`.
+
+## Project Structure
+
+- `simplex.py` – pure-Python implementation of the primal simplex method for `max c^T x` with `A x <= b`.
+- `market.py` – fetches Binance 24h ticker data or reads manual CSV/JSON snapshots into `AssetSnapshot` records.
+- `trader.py` – converts snapshots into an LP (budget, max allocation, risk cap) and turns the simplex solution into trade instructions.
+- `ledger.py` – minimal CSV writer that stores timestamped trades for later analysis.
+- `app.py` – Streamlit dashboard with auto-refresh, live charts, and ledger integration.
+- `tests/test_simplex.py` – regression tests for the simplex solver and allocation logic.
+
+## Manual Snapshots
+
+Provide a CSV with columns `symbol,price,expected_return,risk` or a JSON list of objects with the same keys. Example:
+
+```csv
+symbol,price,expected_return,risk
+BTCUSDT,108000,0.015,0.06
+ETHUSDT,3800,0.02,0.08
+```
+
+The engine treats `expected_return` as the linear objective coefficient and enforces `risk_budget` by summing `risk * weight`.
+
+## Streamlit Dashboard
+
+- **Symbols & Budget** – pick trading pairs, set portfolio budget, per-asset caps, and risk budget (weights·risk ≤ limit).
+- **Data Sources** – pull Binance spot data or upload manual CSV/JSON files for custom expected returns.
+- **Auto Refresh** – enable polling (10–600 s) to keep allocations and charts in sync without manual clicks.
+- **Real-time Charts** – Altair plots visualize weights, dollar allocations, and objective value across runs.
+- **Ledger** – every rebalance appends to `trades/trades.csv` so you can audit or backtest decisions elsewhere.
+
+## Development
+
+- Format: standard library + `numpy`, `pandas`, and Streamlit; the simplex implementation lives in `simplex.py`.
+- Tests: run `pytest` after touching the solver or trading logic.
+- Logging: inspect `trades/trades.csv` to audit what the bot executed—no databases involved.

@@ -1,121 +1,58 @@
 from __future__ import annotations
 
-import logging
+import csv
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence
 
 import requests
 
-
 BINANCE_REST_URL = "https://api.binance.com"
-DEFAULT_SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-]
+DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT")
 
 
-class BinanceAPIError(Exception):
-    """Raised when the Binance REST API returns an error."""
+class BinanceAPIError(RuntimeError):
+    """Raised when the Binance REST API cannot fulfill a request."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class AssetSnapshot:
     symbol: str
     price: float
-    price_change_percent: float
-    high_price: float
-    low_price: float
+    expected_return: float
+    risk: float
     volume: float
-    event_time: datetime
-    feedback_z: float
-    return_7d: Optional[float] = None
-    return_30d: Optional[float] = None
-    return_365d: Optional[float] = None
-
-    @property
-    def expected_return(self) -> float:
-        return self.feedback_z
-
-    @property
-    def risk_score(self) -> float:
-        if self.price <= 0:
-            return 0.0
-        span = self.high_price - self.low_price
-        return max(span, 0.0) / self.price
+    timestamp: datetime
 
 
-def _sample_snapshot() -> List[AssetSnapshot]:
-    sample_rows: List[Dict[str, float]] = [
-        {
-            "symbol": "BTCUSDT",
-            "price": 108421.34,
-            "price_change_percent": -4.485,
-            "high_price": 111280.67,
-            "low_price": 105562.01,
-            "volume": 31250.0,
-            "return_7d": -0.082,
-            "return_30d": 0.014,
-            "return_365d": 0.612,
-        },
-        {
-            "symbol": "ETHUSDT",
-            "price": 3815.92,
-            "price_change_percent": -5.191,
-            "high_price": 3932.90,
-            "low_price": 3698.94,
-            "volume": 265430.0,
-            "return_7d": -0.096,
-            "return_30d": 0.032,
-            "return_365d": 0.702,
-        },
-        {
-            "symbol": "BNBUSDT",
-            "price": 1098.33,
-            "price_change_percent": -1.729,
-            "high_price": 1121.81,
-            "low_price": 1074.85,
-            "volume": 78542.0,
-            "return_7d": -0.035,
-            "return_30d": 0.027,
-            "return_365d": 0.488,
-        },
-        {
-            "symbol": "SOLUSDT",
-            "price": 187.62,
-            "price_change_percent": -6.842,
-            "high_price": 195.23,
-            "low_price": 180.01,
-            "volume": 904210.0,
-            "return_7d": -0.124,
-            "return_30d": 0.041,
-            "return_365d": 0.834,
-        },
-    ]
-    return [
-        AssetSnapshot(
-            symbol=row["symbol"],
-            price=row["price"],
-            price_change_percent=row["price_change_percent"],
-            high_price=row["high_price"],
-            low_price=row["low_price"],
-            volume=row["volume"],
-            event_time=datetime(2025, 10, 30, 13, 25, tzinfo=timezone.utc),
-            feedback_z=row["price_change_percent"] / 100.0,
-            return_7d=row.get("return_7d"),
-            return_30d=row.get("return_30d"),
-            return_365d=row.get("return_365d"),
+def _fallback_rows(symbols: Sequence[str]) -> List[AssetSnapshot]:
+    sample = {
+        "BTCUSDT": (108_000.0, 0.012, 0.05),
+        "ETHUSDT": (3_800.0, 0.018, 0.07),
+        "BNBUSDT": (1_050.0, 0.009, 0.04),
+        "SOLUSDT": (190.0, 0.022, 0.09),
+    }
+    now = datetime.now(timezone.utc)
+    rows = []
+    for symbol in symbols:
+        price, exp_ret, risk = sample.get(symbol, (100.0, 0.0, 0.05))
+        rows.append(
+            AssetSnapshot(
+                symbol=symbol,
+                price=price,
+                expected_return=exp_ret,
+                risk=risk,
+                volume=0.0,
+                timestamp=now,
+            )
         )
-        for row in sample_rows
-    ]
+    return rows
 
 
 class BinanceClient:
-    """Lightweight wrapper around the Binance public REST API."""
+    """Small wrapper around the Binance public API."""
 
     def __init__(
         self,
@@ -128,79 +65,112 @@ class BinanceClient:
         self._session = session or requests.Session()
         self._timeout = timeout
 
-    def _request(self, path: str, params: Dict[str, str]) -> Dict[str, str]:
+    def _get(self, path: str, params: dict) -> dict:
         url = f"{self._base_url}{path}"
         try:
             response = self._session.get(url, params=params, timeout=self._timeout)
-        except requests.RequestException as exc:  # pragma: no cover - network issue
+        except requests.RequestException as exc:
             raise BinanceAPIError(f"failed to reach binance api: {exc}") from exc
-
         if response.status_code != 200:
             raise BinanceAPIError(
                 f"binance api error ({response.status_code}): {response.text}"
             )
-
         try:
-            payload = response.json()
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise BinanceAPIError("invalid json returned by binance api") from exc
+            return response.json()
+        except ValueError as exc:
+            raise BinanceAPIError("binance api returned invalid json") from exc
 
-        if isinstance(payload, dict) and payload.get("code"):
-            raise BinanceAPIError(
-                f"binance api returned error code {payload.get('code')}: "
-                f"{payload.get('msg')}"
-            )
-        return payload
-
-    def fetch_snapshot(
-        self, symbols: Iterable[str]
-    ) -> List[AssetSnapshot]:
-        snapshots: List[AssetSnapshot] = []
+    def fetch_snapshot(self, symbols: Iterable[str]) -> List[AssetSnapshot]:
+        rows: List[AssetSnapshot] = []
         for symbol in symbols:
-            payload = self._request("/api/v3/ticker/24hr", params={"symbol": symbol})
+            payload = self._get("/api/v3/ticker/24hr", params={"symbol": symbol})
             try:
                 price = float(payload["lastPrice"])
-                price_change_percent = float(payload["priceChangePercent"])
+                change_pct = float(payload["priceChangePercent"]) / 100.0
                 high_price = float(payload["highPrice"])
                 low_price = float(payload["lowPrice"])
                 volume = float(payload.get("volume", 0.0))
-                event_time = datetime.fromtimestamp(
-                    int(payload.get("closeTime", 0)) / 1000.0, tz=timezone.utc
-                )
+                close_time_ms = int(payload.get("closeTime", 0))
             except (KeyError, TypeError, ValueError) as exc:
                 raise BinanceAPIError(
                     f"malformed payload received for {symbol}: {payload}"
                 ) from exc
-
-            snapshots.append(
+            risk = 0.0
+            if price > 0.0:
+                span = max(high_price - low_price, 0.0)
+                risk = span / price
+            rows.append(
                 AssetSnapshot(
                     symbol=symbol,
                     price=price,
-                    price_change_percent=price_change_percent,
-                    high_price=high_price,
-                    low_price=low_price,
+                    expected_return=change_pct,
+                    risk=risk,
                     volume=volume,
-                    event_time=event_time,
-                    feedback_z=price_change_percent / 100.0,
+                    timestamp=datetime.fromtimestamp(
+                        close_time_ms / 1000.0, tz=timezone.utc
+                    ),
                 )
             )
-        return snapshots
+        return rows
 
 
-def get_market_snapshot(
-    symbols: Optional[Iterable[str]] = None,
-    *,
-    client: Optional[BinanceClient] = None,
-    enable_fallback: bool = True,
-) -> List[AssetSnapshot]:
-    symbols = list(symbols or DEFAULT_SYMBOLS)
-    api_client = client or BinanceClient()
-    try:
-        return api_client.fetch_snapshot(symbols)
-    except BinanceAPIError as exc:
-        if not enable_fallback:
-            raise
-        logging.getLogger(__name__).warning(
-            "Binance API unavailable; falling back to sample snapshot (%s)", exc
-        )
-        return _sample_snapshot()
+def _parse_custom_row(row: dict, seen_symbols: set[str], now: datetime) -> AssetSnapshot:
+    symbol = str(row["symbol"]).upper()
+    if symbol in seen_symbols:
+        raise ValueError(f"duplicate symbol {symbol} in manual data")
+    seen_symbols.add(symbol)
+    price = float(row["price"])
+    expected = float(row.get("expected_return", row.get("return", 0.0)))
+    risk = float(row.get("risk", abs(expected)))
+    volume = float(row.get("volume", 0.0))
+    return AssetSnapshot(
+        symbol=symbol,
+        price=price,
+        expected_return=expected,
+        risk=max(risk, 0.0),
+        volume=max(volume, 0.0),
+        timestamp=now,
+    )
+
+
+def _load_manual_data(path: Path) -> List[AssetSnapshot]:
+    now = datetime.now(timezone.utc)
+    seen_symbols: set[str] = set()
+    if path.suffix.lower() == ".json":
+        payload = json.loads(path.read_text())
+        if not isinstance(payload, list):
+            raise ValueError("manual JSON data must be a list of objects")
+        return [_parse_custom_row(row, seen_symbols, now) for row in payload]
+    if path.suffix.lower() == ".csv":
+        rows = []
+        with path.open("r", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                rows.append(_parse_custom_row(row, seen_symbols, now))
+        return rows
+    raise ValueError("manual data file must be .csv or .json")
+
+
+class MarketDataSource:
+    def __init__(
+        self,
+        symbols: Sequence[str] = DEFAULT_SYMBOLS,
+        *,
+        data_file: Optional[Path] = None,
+        enable_fallback: bool = True,
+        client: Optional[BinanceClient] = None,
+    ) -> None:
+        self._symbols = tuple(symbols) if symbols else DEFAULT_SYMBOLS
+        self._data_file = Path(data_file).expanduser() if data_file else None
+        self._enable_fallback = enable_fallback
+        self._client = client or BinanceClient()
+
+    def fetch(self) -> List[AssetSnapshot]:
+        if self._data_file:
+            return _load_manual_data(self._data_file)
+        try:
+            return self._client.fetch_snapshot(self._symbols)
+        except BinanceAPIError:
+            if not self._enable_fallback:
+                raise
+        return _fallback_rows(self._symbols)
