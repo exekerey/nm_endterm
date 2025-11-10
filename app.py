@@ -632,7 +632,7 @@ def main() -> None:
             st.subheader("trade instructions")
             st.dataframe(trades_df, hide_index=True, use_container_width=True)
 
-        st.subheader("Allocation Rationale")
+        st.subheader("Allocation rationale")
         budget_note = last_params.get("budget")
         max_alloc_note = last_params.get("max_allocation")
         risk_budget_note = last_params.get("risk_budget")
@@ -673,7 +673,7 @@ def main() -> None:
 
     history_df = _load_ledger_history(ledger_path)
 
-    st.subheader("Real-time Charts")
+    st.subheader("Real-time charts")
     if not history_df.empty:
         ts_series = history_df["timestamp"]
         if ts_series.dt.tz is None:
